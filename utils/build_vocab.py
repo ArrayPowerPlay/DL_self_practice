@@ -24,7 +24,7 @@ class Vocab:
     def __getitem__(self, tokens):
         if not isinstance(tokens, (list, tuple)):
             return self.token_to_idx.get(tokens, self.unk)
-        return [self.token_to_idx[token] for token in tokens]
+        return [self.__getitem__(token) for token in tokens]
     
 
     def to_tokens(self, index):
