@@ -55,7 +55,7 @@ batch_size = 128
 train_data, test_data = train_test_split(encoded, test_size=0.1, random_state=42)
 
 train_dataset = WordDataset(train_data, num_steps)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
 test_dataset = WordDataset(test_data, num_steps)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)

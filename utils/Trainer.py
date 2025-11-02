@@ -76,7 +76,7 @@ class RNNTrainer():
         with torch.no_grad():
             pbar = tqdm(self.test_loader, desc='Evaluating')
 
-            for X, Y in self.test_loader:
+            for X, Y in pbar:
                 X, Y = X.T.to(self.device), Y.T.to(self.device)
                 # Forward pass
                 y_hat, state = self.model(X, state)
