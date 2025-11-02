@@ -24,7 +24,6 @@ class RNNTrainer():
 
         self.train_loss = []
         self.test_loss = []
-        self.test_acc = []
 
 
     def training_step(self):
