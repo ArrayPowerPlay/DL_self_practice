@@ -11,7 +11,7 @@ class RNNTrainer():
                   num_epochs=10, gradient_clip_val=None):
         self.model = model
         self.train_loader = train_loader
-        self.test_loader = val_loader
+        self.val_loader = val_loader
         self.vocab_size = vocab_size
         self.lr = lr
         self.num_epochs = num_epochs
