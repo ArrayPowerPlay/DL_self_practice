@@ -73,7 +73,7 @@ class RNNTrainer():
         state = None
 
         with torch.no_grad():
-            pbar = tqdm(self.test_loader, desc='Evaluating')
+            pbar = tqdm(self.val_loader, desc='Evaluating')
 
             for X, Y in pbar:
                 X, Y = X.T.to(self.device), Y.T.to(self.device)
