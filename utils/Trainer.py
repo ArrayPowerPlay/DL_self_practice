@@ -7,11 +7,11 @@ from tqdm import tqdm
 
 class RNNTrainer():
     """Class used for training RNNs models (RNN, LSTM, GRU)"""
-    def __init__(self, model, train_loader, test_loader, vocab_size, lr=1e-3,
+    def __init__(self, model, vocab_size, train_loader, val_loader=None, lr=1e-3,
                   num_epochs=10, gradient_clip_val=None):
         self.model = model
         self.train_loader = train_loader
-        self.test_loader = test_loader
+        self.test_loader = val_loader
         self.vocab_size = vocab_size
         self.lr = lr
         self.num_epochs = num_epochs
@@ -23,7 +23,7 @@ class RNNTrainer():
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         self.train_loss = []
-        self.test_loss = []
+        self.val_loss = []
 
 
     def training_step(self):
@@ -65,8 +65,8 @@ class RNNTrainer():
         return avg_loss
 
 
-    def evaluate(self):
-        # Calculate loss in test set
+    def evaluate_step(self):
+        # Calculate loss in evaluation set
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
@@ -94,18 +94,19 @@ class RNNTrainer():
             # Training
             train_loss_epoch = self.training_step()
             self.train_loss.append(train_loss_epoch)
-            # Testing
-            test_loss_epoch = self.evaluate()
-            self.test_loss.append(test_loss_epoch)
+            # Evaluating
+            if self.val_loader is not None:
+                val_loss_epoch = self.evaluate_step()
+                self.val_loss.append(val_loss_epoch)
 
 
     def plot(self):
-        # Show plot of training and testing loss
+        # Show plot of training and evaluation loss
         plt.figure(figsize=(10, 6))
         epochs = list(range(1, len(self.train_loss) + 1))
 
         plt.plot(epochs, self.train_loss, label='train_loss')
-        plt.plot(epochs, self.test_loss, label='test_loss')
+        plt.plot(epochs, self.val_loss, label='val_loss')
 
         plt.xlabel('Epochs')
         plt.ylabel('Loss')
