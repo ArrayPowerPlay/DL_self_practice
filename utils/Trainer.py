@@ -3,6 +3,7 @@ from torch import nn
 from torch import optim
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import math
 
 
 class RNNTrainer():
@@ -24,6 +25,8 @@ class RNNTrainer():
 
         self.train_loss = []
         self.val_loss = []
+        self.train_ppl = []
+        self.val_ppl = []
 
 
     def training_step(self):
@@ -94,10 +97,12 @@ class RNNTrainer():
             # Training
             train_loss_epoch = self.training_step()
             self.train_loss.append(train_loss_epoch)
+            self.train_ppl.append(math.exp(self.train_loss))
             # Evaluating
             if self.val_loader is not None:
                 val_loss_epoch = self.evaluate_step()
                 self.val_loss.append(val_loss_epoch)
+                self.val_ppl.append(math.exp(self.val_loss))
 
 
     def plot(self):
