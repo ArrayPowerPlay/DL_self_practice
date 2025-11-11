@@ -9,7 +9,7 @@ import math
 class RNNTrainer():
     """Class used for training RNNs models (RNN, LSTM, GRU)"""
     def __init__(self, model, vocab_size, train_loader, val_loader=None, lr=1e-3,
-                  num_epochs=10, gradient_clip_val=None):
+                  num_epochs=10, gradient_clip_val=1.0):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -39,11 +39,11 @@ class RNNTrainer():
         # Add tqdm for training progress
         pbar = tqdm(self.train_loader, desc='Training')
 
-        for X, Y in pbar:
-            X, Y = X.to(self.device), Y.to(self.device)
+        for X, Y in pbar:       
+            X, Y = X.T.to(self.device), Y.T.to(self.device)
             # Forward pass
             y_hat, state = self.model(X, state)
-            # Detach 'state' to interrupt computational graph
+            
             if state is not None:
                 if isinstance(state, tuple):    # LSTM
                     state = tuple(s.detach() for s in state)
@@ -68,7 +68,7 @@ class RNNTrainer():
         return avg_loss
 
 
-    def evaluate_step(self):
+    def validation_step(self):
         # Calculate loss in evaluation set
         self.model.eval()
         total_loss = 0.0
@@ -97,21 +97,21 @@ class RNNTrainer():
             # Training
             train_loss_epoch = self.training_step()
             self.train_loss.append(train_loss_epoch)
-            self.train_ppl.append(math.exp(self.train_loss))
+            self.train_ppl.append(math.exp(train_loss_epoch))
             # Evaluating
             if self.val_loader is not None:
                 val_loss_epoch = self.evaluate_step()
                 self.val_loss.append(val_loss_epoch)
-                self.val_ppl.append(math.exp(self.val_loss))
+                self.val_ppl.append(math.exp(val_loss_epoch))
 
 
     def plot(self):
         # Show plot of training and evaluation loss
         plt.figure(figsize=(10, 6))
-        epochs = list(range(1, len(self.train_loss) + 1))
+        epochs = list(range(1, len(self.train_ppl) + 1))
 
-        plt.plot(epochs, self.train_loss, label='train_loss')
-        plt.plot(epochs, self.val_loss, label='val_loss')
+        plt.plot(epochs, self.train_ppl, label='train_ppl')
+        plt.plot(epochs, self.val_ppl, label='val_ppl')
 
         plt.xlabel('Epochs')
         plt.ylabel('Loss')
