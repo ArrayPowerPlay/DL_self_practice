@@ -28,9 +28,9 @@ class Vocab:
     
 
     def to_tokens(self, index):
-        if not isinstance(index, (list, tuple)):
-            return self.idx_to_token[index]
-        return [self.idx_to_token[idx] for idx in index]
+        if hasattr(index, '__len__') and len(index) > 1:
+            return [self.idx_to_token[idx] for idx in index]
+        return self.idx_to_token[index]
         
 
     @property
