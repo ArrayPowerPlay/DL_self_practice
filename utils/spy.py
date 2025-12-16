@@ -288,6 +288,54 @@ class CIFAR10(DataModule):
         return DataLoader(data, self.batch_size, shuffle=train, num_workers=self.num_workers)
 
 
+class CIFAR100(DataModule):
+    """CIFAR-100 dataset from torchvision"""
+    def __init__(self, batch_size=64, resize=(32, 32), root='../data/cifar-100'):
+        super().__init__()
+        self.batch_size = batch_size
+        self.root = root
+        self.num_workers = 2
+        self.mean = [0.507, 0.487, 0.441]
+        self.std = [0.267, 0.256, 0.276]
+        
+        # Define transform (giống CIFAR10)
+        train_trans = transforms.Compose([
+            transforms.Resize(resize),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(resize[0], padding=4),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=self.mean, 
+                               std=self.std)
+        ])
+        
+        test_trans = transforms.Compose([
+            transforms.Resize(resize),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=self.mean,
+                               std=self.std)
+        ])
+        
+        # Download + load dataset (CIFAR100 thay vì CIFAR10)
+        self.train = torchvision.datasets.CIFAR100(
+            root=self.root, train=True, transform=train_trans, download=True)
+        self.val = torchvision.datasets.CIFAR100(
+            root=self.root, train=False, transform=test_trans, download=True)
+    
+
+    def text_labels(self, indices):
+        """Return text labels for indices (accepts single int or list)"""
+        labels = ['apple', 'aquarium_fish', 'baby', 'bear', 'beaver', 'bed', 'bee', 'beetle', 'bicycle', 'bottle', 'bowl', 'boy', 'bridge', 'bus', 'butterfly', 'camel', 'can', 'castle', 'caterpillar', 'cattle', 'chair', 'chimpanzee', 'clock', 'cloud', 'cockroach', 'couch', 'crab', 'crocodile', 'cup', 'cupboard', 'curtain', 'curve', 'cushion', 'daisy', 'dam', 'dance', 'danger', 'daring', 'deer', 'defense', 'device', 'diamond', 'diary', 'dice', 'diet', 'difference', 'digital', 'diminish', 'dinosaur', 'direct', 'dirt', 'disagree', 'discover', 'disease', 'dish', 'dismiss', 'disorder', 'display', 'distance', 'divide', 'dock', 'doctor', 'dog', 'doll', 'dolphin', 'dome', 'dominant', 'dominate', 'done', 'donkey', 'donor', 'door', 'dose', 'double', 'dove', 'down', 'dozen', 'draft', 'dragon', 'dragonfly', 'drain', 'drama', 'drastic', 'draw', 'dream', 'dress', 'drift', 'drill', 'drink', 'drip', 'drive', 'driver', 'drop', 'drove', 'drown', 'drum', 'drunk', 'dry', 'duck', 'dumb', 'dune', 'dungeon', 'duplicate', 'dusk', 'dust', 'duty', 'dwarf', 'dwell', 'eagle', 'early', 'earn', 'earth', 'easily', 'east', 'easy', 'echo', 'eclipse', 'ecology', 'economy', 'edge', 'edit', 'educate', 'effort', 'egg', 'eight', 'either', 'elbow', 'elder', 'electric', 'elegant', 'element', 'elephant', 'elevator', 'elite', 'elk', 'elm', 'else', 'email', 'embark', 'embarrass', 'embassy', 'ember', 'emblem', 'embrace', 'emerge', 'emerald', 'emergency', 'emery', 'emotion', 'emperor', 'emphasis', 'empire', 'employ', 'empty', 'enable', 'enact', 'encounter', 'encourage', 'end', 'endanger', 'endear', 'ending', 'endless', 'endorse', 'endure', 'enemy', 'energy', 'enforce', 'engage', 'engine', 'enhance', 'enjoy', 'enlarge', 'enough', 'enrage', 'enrich', 'enroll', 'ensemble', 'ensure', 'enter', 'entertain', 'enthusiasm', 'entice', 'entire', 'entry', 'envelope', 'environment', 'epic', 'episode', 'equal', 'equally', 'equate', 'equilibrium', 'equip', 'equity', 'era', 'erase', 'erect', 'ermine', 'erode', 'erosion', 'error', 'erudite', 'erupt', 'escape', 'eschew', 'escort', 'escrow', 'esophagus', 'esoteric', 'essay', 'essence', 'estate', 'esteem', 'ester', 'estimate', 'estrange', 'estuary', 'eternal', 'ether', 'ethical', 'ethnic', 'ethos', 'etiquette', 'etymology', 'eucalyptus', 'eulogize', 'eulogy', 'eunuch', 'euphemism', 'euphonic', 'euphony', 'eureka', 'european', 'evacuate', 'evade', 'evaluate', 'evangelic', 'evangelist', 'evaporate', 'evasion', 'eve', 'even', 'evening', 'evenly', 'event', 'eventful', 'eventual', 'ever', 'everglade', 'evergreen', 'everlasting', 'every', 'everyday', 'everyone', 'everything', 'everywhere', 'evict', 'evidence', 'evident', 'evil', 'evince', 'eviscerate', 'evoke', 'evolution', 'evolve', 'ewe', 'exact', 'exacting', 'exaction', 'exactly', 'exaggerate', 'exalt', 'examine', 'example', 'exasperate', 'excavate', 'exceed', 'excel', 'excellence', 'excellent', 'except', 'exception', 'excerpt', 'excess', 'exchange', 'exchequer', 'excise', 'excision', 'excitable', 'excitation', 'excite', 'exclaim', 'exclamation', 'exclude', 'exclusion', 'exclusive', 'excommunicate', 'excrement', 'excrescence', 'excretion', 'excrete', 'excruciating', 'exculpate', 'excursion', 'excuse', 'execute', 'execution', 'executive', 'executor', 'exegesis', 'exemplar', 'exemplary', 'exemplify', 'exempt', 'exemption', 'exercise', 'exert', 'exertion', 'exhale', 'exhaust', 'exhaustible', 'exhaustion', 'exhaustive', 'exhibit', 'exhibition', 'exhilarate', 'exhort', 'exhortation', 'exhume', 'exigency', 'exigent', 'exiguity', 'exiguous', 'exile', 'exist', 'existence', 'existent', 'existential', 'existentialism', 'existing', 'exit', 'exiting', 'exodus', 'exonerate', 'exorbitance', 'exorbitant', 'exorcise', 'exorcism', 'exorcist', 'exotic', 'exotica', 'expand', 'expander', 'expanse', 'expansion', 'expansive', 'expatiate', 'expatriate', 'expect', 'expectancy', 'expectant', 'expectation', 'expectorant', 'expectorate', 'expediency', 'expedient', 'expedite', 'expedition', 'expeditious', 'expel', 'expend', 'expendable', 'expenditure', 'expense', 'expensive', 'experience', 'experiential', 'experiment', 'experimental', 'experimentation', 'experimenter', 'expert', 'expertise', 'expiate', 'expiation', 'expiration', 'expiratory', 'expire', 'expiry', 'explain', 'explanation', 'explanatory', 'expletive', 'explicit', 'explicitness', 'explode', 'exploit', 'exploitation', 'exploiter', 'exploration', 'exploratory', 'explore', 'explorer', 'explosion', 'explosive', 'expo', 'exponent', 'exponential', 'export', 'exporter', 'expose', 'exposition', 'expostulation', 'exposure', 'expound', 'express', 'expression', 'expressionism', 'expressionist', 'expressionless', 'expressive', 'expressively', 'expressway', 'expropriate', 'expropriation', 'expulsion', 'expunge', 'expurgate', 'expurgation', 'exquisite', 'exquisiteness', 'extant', 'extemporaneous', 'extemporarily', 'extemporize', 'extend', 'extender', 'extensible', 'extension', 'extensional', 'extensive', 'extensiveness', 'extensor', 'extent', 'extenuate', 'extenuation', 'exterior', 'exteriorly', 'exterminate', 'extermination', 'exterminator', 'external', 'externality', 'externally', 'extinct', 'extinction', 'extinguish', 'extinguisher', 'extirpate', 'extirpation', 'extol', 'extoll', 'extort', 'extortion', 'extortionist', 'extra', 'extract', 'extraction', 'extractor', 'extracurricular', 'extraditable', 'extradite', 'extradition', 'extrajudicial', 'extramarital', 'extramural', 'extraneous', 'extraordinarily', 'extraordinariness', 'extraordinary', 'extrapolate', 'extrapolation', 'extrasensory', 'extravagance', 'extravagant', 'extravaganza', 'extravasate', 'extravasation', 'extreme', 'extremely', 'extremism', 'extremist', 'extremity', 'extricate', 'extrication', 'extroversion', 'extrovert', 'extrude', 'extrusion', 'exuberance', 'exuberant', 'exudation', 'exude', 'exult', 'exultancy', 'exultant', 'exultation', 'eye', 'eyeball', 'eyebright', 'eyebrow', 'eyecup', 'eyed', 'eyedness', 'eyedropper', 'eyeful', 'eyelash', 'eyelet', 'eyelid', 'eyeopener', 'eyepiece', 'eyeshot', 'eyesight', 'eyesore', 'eyestrain', 'eyetooth', 'eyewash', 'eyewater', 'eyewink', 'eyrie', 'eyre', 'ezra']
+        if isinstance(indices, int):
+            return labels[indices]
+        return [labels[int(i)] for i in indices]
+    
+
+    def get_dataloader(self, train):
+        """Get dataloader for training or validation"""
+        data = self.train if train else self.val
+        return DataLoader(data, self.batch_size, shuffle=train, num_workers=self.num_workers)
+
+
 def visualize_prediction(model, data, num_examples=8, trainer=None):
     """Function for visualizing predictions if images for image classification tasks"""
     if not hasattr(data, 'text_labels'):
