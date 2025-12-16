@@ -208,6 +208,8 @@ class FashionMNIST(DataModule):
         self.resize = resize
         self.root = root
         self.num_workers = 2
+        self.mean = [0.0]  # Grayscale image, no normalization
+        self.std = [1.0]
         
         # Định nghĩa transform
         trans = transforms.Compose([
@@ -244,6 +246,8 @@ class CIFAR10(DataModule):
         self.batch_size = batch_size
         self.root = root
         self.num_workers = 2
+        self.mean = [0.491, 0.482, 0.447]
+        self.std = [0.247, 0.243, 0.262]
         
         # Define transform with data augmentation for training
         train_trans = transforms.Compose([
@@ -251,15 +255,15 @@ class CIFAR10(DataModule):
             transforms.RandomHorizontalFlip(),
             transforms.RandomCrop(resize[0], padding=4),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.491, 0.482, 0.447], 
-                               std=[0.247, 0.243, 0.262])
+            transforms.Normalize(mean=self.mean, 
+                               std=self.std)
         ])
         
         test_trans = transforms.Compose([
             transforms.Resize(resize),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.491, 0.482, 0.447],
-                               std=[0.247, 0.243, 0.262])
+            transforms.Normalize(mean=self.mean,
+                               std=self.std)
         ])
         
         # Download + load dataset
@@ -311,6 +315,12 @@ def visualize_prediction(model, data, num_examples=8, trainer=None):
                 img = X[i].cpu()
                 true_label = Y[i].item()
                 pred_label = Y_hat[i].argmax().item()
+
+                # Denormalize if the data class has normalization stats
+                if hasattr(data, 'mean') and hasattr(data, 'std'):
+                    mean = torch.tensor(data.mean).view(-1, 1, 1)
+                    std = torch.tensor(data.std).view(-1, 1, 1)
+                    img = img * std + mean
 
                 if img.shape[0] == 1:    # gray image
                     axes[cnt].imshow(img.squeeze().numpy())
