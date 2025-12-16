@@ -336,8 +336,16 @@ class CIFAR100(DataModule):
         return DataLoader(data, self.batch_size, shuffle=train, num_workers=self.num_workers)
 
 
-def visualize_prediction(model, data, num_examples=8, trainer=None):
-    """Function for visualizing predictions if images for image classification tasks"""
+def visualize_prediction(model, data, num_examples=8, trainer=None, save_path=None):
+    """Function for visualizing predictions if images for image classification tasks
+    
+    Args:
+        model: Trained model
+        data: Data module with validation set
+        num_examples: Number of examples to visualize
+        trainer: Trainer instance for device info
+        save_path: Path to save the figure (e.g., 'predictions.png'). If None, only display
+    """
     if not hasattr(data, 'text_labels'):
         raise ValueError("Dataset must support 'text_labels' method")
     
@@ -392,6 +400,11 @@ def visualize_prediction(model, data, num_examples=8, trainer=None):
         axes[idx].axis('off')
     
     plt.tight_layout()
+    
+    # Save if path provided
+    if save_path is not None:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    
     plt.show()
 
 
