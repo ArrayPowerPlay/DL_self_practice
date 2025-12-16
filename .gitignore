@@ -1,3 +1,4 @@
 data
 my_nlp_project.egg-info
 utils/__pycache__
+utils/__init__.py
