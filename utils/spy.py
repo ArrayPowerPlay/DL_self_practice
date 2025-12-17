@@ -96,6 +96,7 @@ class Trainer:
         self.max_epochs = int(max_epochs)
         self.gradient_clip_val = gradient_clip_val
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.scheduler = None
 
     
     def prepare_data(self, data):
@@ -107,6 +108,9 @@ class Trainer:
         self.model = model.to(self.device)
         model.set_trainer(self)
         self.optimizer = model.configure_optimizers()
+        # Configure scheduler if model provides one
+        if hasattr(model, 'configure_scheduler'):
+            self.scheduler = model.configure_scheduler(self.optimizer)
 
 
     def _clip_gradients(self):
@@ -155,8 +159,13 @@ class Trainer:
 
         return train_loss, val_loss, val_acc
 
+    def _step_scheduler(self):
+        """Step the learning rate scheduler if available"""
+        if self.scheduler is not None:
+            self.scheduler.step()
+
         
-    def fit(self, model, data, plot_every=10):
+    def fit(self, model, data):
         self.prepare_data(data)
         self.prepare_model(model)
         
@@ -175,6 +184,7 @@ class Trainer:
                 model.board['val_loss'].append(val_loss)
             if val_acc is not None:
                 model.board['val_acc'].append(val_acc)
+            self._step_scheduler()
             model.plot()
         if model._fig is not None:
             plt.close(model._fig)
@@ -1194,3 +1204,27 @@ class ViT(Classifier):
         for blk in self.blks:
             X = blk(X)
         return self.head(X[:, 0])
+
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=5e-2)
+    
+    def configure_scheduler(self, optimizer, warmup_epochs=5, max_epochs=None):
+        """Configure CosineAnnealingLR with warmup"""
+        if max_epochs is None:
+            max_epochs = self._trainer.max_epochs if hasattr(self, '_trainer') and self._trainer else 30
+        
+        # Warmup scheduler: gradually increase lr from 0.01x to 1x
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.01, total_iters=warmup_epochs
+        )
+        # Main scheduler: cosine annealing
+        main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max_epochs - warmup_epochs, eta_min=1e-5
+        )
+        # Combine both with SequentialLR
+        return torch.optim.lr_scheduler.SequentialLR(
+            optimizer, 
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[warmup_epochs]
+        )
