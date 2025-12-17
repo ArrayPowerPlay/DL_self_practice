@@ -212,12 +212,12 @@ class DataModule:
 
 class FashionMNIST(DataModule):
     """FashionMNIST dataset from torchvision"""
-    def __init__(self, batch_size=64, resize=(28, 28), root='../data/fashion-mnist'):
+    def __init__(self, batch_size=64, resize=(28, 28), root='../data/fashion-mnist', num_workers=4):
         super().__init__()
         self.batch_size = batch_size
         self.resize = resize
         self.root = root
-        self.num_workers = 2
+        self.num_workers = num_workers
         self.mean = [0.0]  # Grayscale image, no normalization
         self.std = [1.0]
         
@@ -251,7 +251,7 @@ class FashionMNIST(DataModule):
 
 class CIFAR10(DataModule):
     """CIFAR-10 dataset from torchvision"""
-    def __init__(self, batch_size=64, resize=(32, 32), root='../data/cifar-10', num_workers=8):
+    def __init__(self, batch_size=64, resize=(32, 32), root='../data/cifar-10', num_workers=4):
         super().__init__()
         self.batch_size = batch_size
         self.root = root
@@ -1209,22 +1209,20 @@ class ViT(Classifier):
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=5e-2)
     
+
     def configure_scheduler(self, optimizer, warmup_epochs=5, max_epochs=None):
-        """Configure CosineAnnealingLR with warmup"""
+        """Configure CosineAnnealingLR with linear warmup using LambdaLR (standard PyTorch approach)"""
         if max_epochs is None:
             max_epochs = self._trainer.max_epochs if hasattr(self, '_trainer') and self._trainer else 30
+
+        def lr_lambda(epoch):
+            """Learning rate schedule: warmup then cosine annealing"""
+            if epoch < warmup_epochs:
+                # Linear warmup: 0.01 → 1.0 over warmup_epochs
+                return 0.01 + (1.0 - 0.01) * epoch / warmup_epochs
+            else:
+                # Cosine annealing from 1.0 → 0.0 after warmup
+                progress = (epoch - warmup_epochs) / (max_epochs - warmup_epochs)
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
         
-        # Warmup scheduler: gradually increase lr from 0.01x to 1x
-        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.01, total_iters=warmup_epochs
-        )
-        # Main scheduler: cosine annealing
-        main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=max_epochs - warmup_epochs, eta_min=1e-5
-        )
-        # Combine both with SequentialLR
-        return torch.optim.lr_scheduler.SequentialLR(
-            optimizer, 
-            schedulers=[warmup_scheduler, main_scheduler],
-            milestones=[warmup_epochs]
-        )
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
