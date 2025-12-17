@@ -156,7 +156,7 @@ class Trainer:
         return train_loss, val_loss, val_acc
 
         
-    def fit(self, model, data):
+    def fit(self, model, data, plot_every=10):
         self.prepare_data(data)
         self.prepare_model(model)
         
@@ -241,11 +241,11 @@ class FashionMNIST(DataModule):
 
 class CIFAR10(DataModule):
     """CIFAR-10 dataset from torchvision"""
-    def __init__(self, batch_size=64, resize=(32, 32), root='../data/cifar-10'):
+    def __init__(self, batch_size=64, resize=(32, 32), root='../data/cifar-10', num_workers=8):
         super().__init__()
         self.batch_size = batch_size
         self.root = root
-        self.num_workers = 2
+        self.num_workers = num_workers
         self.mean = [0.491, 0.482, 0.447]
         self.std = [0.247, 0.243, 0.262]
         
@@ -290,11 +290,11 @@ class CIFAR10(DataModule):
 
 class CIFAR100(DataModule):
     """CIFAR-100 dataset from torchvision"""
-    def __init__(self, batch_size=64, resize=(32, 32), root='../data/cifar-100'):
+    def __init__(self, batch_size=64, resize=(32, 32), root='../data/cifar-100', num_workers=8):
         super().__init__()
         self.batch_size = batch_size
         self.root = root
-        self.num_workers = 2
+        self.num_workers = num_workers
         self.mean = [0.507, 0.487, 0.441]
         self.std = [0.267, 0.256, 0.276]
         
