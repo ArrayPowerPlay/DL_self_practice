@@ -44,6 +44,11 @@ class Module(nn.Module):
         return torch.optim.SGD(self.parameters(), self.lr)
     
 
+    def configure_scheduler(self, optimizer):
+        """Override this method to provide a learning rate scheduler"""
+        return None
+    
+
     def plot(self):
         """Plot all training metrics"""
         if self._fig is None:
@@ -108,9 +113,7 @@ class Trainer:
         self.model = model.to(self.device)
         model.set_trainer(self)
         self.optimizer = model.configure_optimizers()
-        # Configure scheduler if model provides one
-        if hasattr(model, 'configure_scheduler'):
-            self.scheduler = model.configure_scheduler(self.optimizer)
+        self.scheduler = model.configure_scheduler(self.optimizer)
 
 
     def _clip_gradients(self):
@@ -158,6 +161,7 @@ class Trainer:
                     val_acc = acc_total / val_batches
 
         return train_loss, val_loss, val_acc
+
 
     def _step_scheduler(self):
         """Step the learning rate scheduler if available"""
@@ -1179,12 +1183,15 @@ class ViTBlock(nn.Module):
 class ViT(Classifier):
     """Implementation of vision Transformer"""
     def __init__(self, img_size, patch_size, num_hiddens, mlp_num_hiddens, num_heads, num_blks,
-                 emb_dropout, blk_dropout, lr=0.1, use_bias=False, num_classes=10):
+                 emb_dropout, blk_dropout, lr=0.1, use_bias=False, num_classes=10, 
+                 optimizer_type='sgd', weight_decay=0.0):
         super().__init__()
         self.patch_embedding = PatchEmbedding(img_size, patch_size, num_hiddens)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, num_hiddens))
+        self.optimizer_type = optimizer_type
+        self.weight_decay = weight_decay
         num_steps = self.patch_embedding.num_patches + 1
-        # Positional embedding are learnable
+        # Positional embeddings are learnable
         self.pos_embedding = nn.Parameter(torch.randn(1, num_steps, num_hiddens))
         self.dropout = nn.Dropout(emb_dropout)
         self.blks = nn.Sequential()
@@ -1207,22 +1214,8 @@ class ViT(Classifier):
 
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=5e-2)
-    
-
-    def configure_scheduler(self, optimizer, warmup_epochs=5, max_epochs=None):
-        """Configure CosineAnnealingLR with linear warmup using LambdaLR (standard PyTorch approach)"""
-        if max_epochs is None:
-            max_epochs = self._trainer.max_epochs if hasattr(self, '_trainer') and self._trainer else 30
-
-        def lr_lambda(epoch):
-            """Learning rate schedule: warmup then cosine annealing"""
-            if epoch < warmup_epochs:
-                # Linear warmup: 0.01 → 1.0 over warmup_epochs
-                return 0.01 + (1.0 - 0.01) * epoch / warmup_epochs
-            else:
-                # Cosine annealing from 1.0 → 0.0 after warmup
-                progress = (epoch - warmup_epochs) / (max_epochs - warmup_epochs)
-                return 0.5 * (1.0 + math.cos(math.pi * progress))
-        
-        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        """Choose optimizer based on setting"""
+        if self.optimizer_type == 'adamw':
+            return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        else:  # Default: SGD
+            return torch.optim.SGD(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
