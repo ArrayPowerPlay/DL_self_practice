@@ -715,7 +715,7 @@ class Seq2Seq(EncoderDecoder):
     
 
     def loss(self, Y_hat, Y):
-        loss_fn = nn.CrossEntropyLoss()
+        loss_fn = nn.CrossEntropyLoss(reduction='None')
         vocab_size = Y_hat.shape[-1]
         y_hat = Y_hat.reshape(-1, vocab_size)
         y = Y.reshape(-1)
