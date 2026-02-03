@@ -1,4 +1,5 @@
 import torch
+import os
 import math
 import collections
 from torch import nn
@@ -1219,3 +1220,251 @@ class ViT(Classifier):
             return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         else:  # Default: SGD
             return torch.optim.SGD(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+
+
+import hashlib
+import requests
+
+def download(url, folder='../data', sha1_hash=None):
+    """Download a file to folder and return its local path"""
+    os.makedirs(folder, exist_ok=True)
+    fname = os.path.join(folder, url.split('/')[-1])
+    # Check if cache hit
+    if os.path.exists(fname) and sha1_hash:
+        sha1 = hashlib.sha1()
+        with open(fname, 'rb') as f:     # rb = read binary
+            while True:
+                data = f.read(1048576)
+                if not data:
+                    break
+                sha1.update(data)
+        # Return the final result as a hexadecimal string and compare it with real sha1_hash
+        if sha1.hexdigest() == sha1_hash:
+            return fname
+    # Download if cache miss
+    print(f"Downloading {fname} from {url}...")
+    r = requests.get(url, stream=True, verify=True)
+    with open(fname, 'wb') as f:        # wb = write binary
+        f.write(r.content)
+    return fname
+
+
+import zipfile
+import tarfile
+
+def download_extract(name, folder='../data', in_folder=None):
+    """Download and extract a zip/tar file"""
+    fname = download(name, folder)
+    base_dir = os.path.dirname(fname)
+    # Extract filename into 2 parts: filename without extension and extension
+    data_dir, ext = os.path.splitext(fname)
+    if ext == '.zip':
+        fp = zipfile.ZipFile(fname, 'r')
+    elif ext in ('.tar', '.gz'):
+        fp = tarfile.open(fname, 'r')
+    else:
+        assert False, 'Only zip/tar files can be extracted!'
+    fp.extractall(base_dir)
+    return os.path.join(base_dir, in_folder) if in_folder else data_dir
+    
+
+import random
+
+def subsample(sentences, vocab):
+    """Subsample high frequency words"""
+    # Exclude unknown tokens ('<unk>')
+    sentences = [[token for token in line if vocab[token] != vocab.unk] for line in sentences]
+    counter = collections.Counter([token for line in sentences for token in line])
+    num_tokens = sum(counter.values())
+
+    # Return True if 'token'
+    def keep(token):
+        return (random.uniform(0, 1) < math.sqrt(1e-4 / counter[token] * num_tokens))
+    
+    return ([[token for token in line if keep(token)] for line in sentences], counter)
+
+
+def get_centers_and_contexts(corpus, max_window_size):
+    """Return center words and context words in skip-gram model"""
+    centers, contexts = [], []
+
+    for line in corpus:
+        # Each sentence must have at least 2 words to form a "sentence pair - word pair"
+        if len(line) < 2:
+            continue
+        centers += line
+        for i in range(len(line)):
+            window_size = random.randint(1, max_window_size)
+            indices = list(range(max(0, i - window_size), min(len(line), i + 1 + window_size)))
+            # Exclude the center word from the context word
+            indices.remove(i)
+            contexts.append([line[idx] for idx in indices])
+
+    return (centers, contexts)
+
+
+class RandomGenerator:
+    """Randomly draw among {1, 2,..., n} according to n sampling weights"""
+    def __init__(self, sampling_weights):
+        # Exclude
+        self.population = list(range(1, len(sampling_weights) + 1))
+        self.sampling_weights = sampling_weights
+        self.candidates = []
+        self.i = 0
+    
+
+    def draw(self):
+        if self.i == len(self.candidates):
+            # Cache 'k' random sampling results
+            self.candidates = random.choices(self.population, self.sampling_weights, k=10000)
+            self.i = 0
+        self.i += 1
+        return self.candidates[self.i - 1]
+    
+
+def get_negatives(all_contexts, vocab, counter, K):
+    """Return noise words in negative sampling"""
+    # Sampling weights for words with indices 1, 2, 3,..., (index 0 is the exclude unknown token)
+    # in the vocabulary
+    sampling_weights = [counter[vocab.to_tokens(i)] ** 0.75 for i in range(1, len(vocab))]
+    all_negatives, generator = [], RandomGenerator(sampling_weights)
+
+    for contexts in all_contexts:
+        negatives = []
+        while len(negatives) < len(contexts) * K:
+            neg = generator.draw()
+            # Exclude context words from noise words
+            if neg not in contexts:
+                negatives.append(neg)
+        all_negatives.append(negatives)
+
+    return all_negatives
+
+
+def batchify(data):
+    """Return a minibatch of examples for skip-gram with negative sampling"""
+    max_len = max(len(c) + len(n) for _, c, n in data)
+    centers, contexts_negatives, masks, labels = [], [], [], []
+    for center, context, negative in data:
+        cur_len = len(context) + len(negative)
+        centers += [center]
+        contexts_negatives += [context + negative + [0] * (max_len - cur_len)]
+        masks += [[1] * cur_len + [0] * (max_len - cur_len)]
+        labels += [[1] * len(context) + [0] * (max_len - len(context))]
+    return (torch.reshape(torch.tensor(centers), (-1, 1)), torch.tensor(
+        contexts_negatives), torch.tensor(masks), torch.tensor(labels))
+
+
+def read_ptb():
+    """Load the PTB dataset into a list of text lines"""
+    data_dir = download_extract('http://d2l-data.s3-accelerate.amazonaws.com/ptb.zip', '../../data')
+    # Read the training set
+    with open(os.path.join(data_dir, 'ptb.train.txt')) as f:
+        raw_text = f.read()
+    return [line.split() for line in raw_text.split('\n')]
+
+
+def load_data_ptb(batch_size, max_window_size, num_noise_words):
+    """Download the PTB dataset and then load it into memory"""
+    sentences = read_ptb()
+    vocab = Vocab(sentences, min_freq=10)
+    subsampled, counter = subsample(sentences, vocab)
+    corpus = [vocab[line] for line in subsampled]
+    all_centers, all_contexts = get_centers_and_contexts(corpus, max_window_size)
+    all_negatives = get_negatives(all_contexts, vocab, counter, num_noise_words)
+
+    
+    class PTBDataset(torch.utils.data.Dataset):
+        def __init__(self, centers, contexts, negatives):
+            assert len(centers) == len(contexts) == len(negatives)
+            self.centers = centers
+            self.contexts = contexts
+            self.negatives = negatives
+
+
+        def __getitem__(self, index):        # Allow an object to behave like a List or a Dictionary.
+            return (self.centers[index], self.contexts[index], self.negatives[index])
+
+
+        def __len__(self):
+            return len(self.centers)
+        
+    
+    dataset = PTBDataset(all_centers, all_contexts, all_negatives)
+    # collate_fn: a custom function that can be passed to the DataLoader to teach it how to package
+    # individual samples into a batch.
+    data_iter = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, collate_fn=batchify)
+
+    return data_iter, vocab
+
+
+from matplotlib_inline import backend_inline
+
+
+class Animator:
+    """For plotting data in animation"""
+    def __init__(self, xlabel=None, ylabel=None, legend=None, xlim=None, ylim=None, xscale='linear',
+                 yscale='linear', fmts=('-', 'm--', 'g-.', 'r:'), nrows=1, ncols=1, figsize=(3.5, 2.5)):
+        # Incrementally plot multiple lines
+        if legend is None:
+            legend = []
+        backend_inline.set_matplotlib_formats('svg')
+        self.fig, self.axes = plt.subplots(nrows, ncols, figsize=figsize)
+        if nrows * ncols == 1:
+            self.axes = [self.axes, ]
+        # Use a function to capture arguments
+        def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
+            axes.set_xlabel(xlabel)
+            axes.set_ylabel(ylabel)
+            axes.set_xlim(xlim)
+            axes.set_ylim(ylim)
+            axes.set_xscale(xscale)
+            axes.set_yscale(yscale)
+            if legend:
+                axes.legend(legend)
+            axes.grid()
+
+        self.config_axes = lambda: set_axes(self.axes[0], xlabel, ylabel, xlim, ylim, 
+                                            xscale, yscale, legend)
+        self.X, self.Y, self.fmts = None, None, fmts
+
+
+    def add(self, x, y):
+        """Add multiple data points into the figure"""
+        if not hasattr(y, "__len__"):
+            y = [y]
+        n = len(y)
+        if not hasattr(x, "__len__"):
+            x = [x] * n
+        if not self.X:
+            self.X = [[] for _ in range(n)]
+        if not self.Y:
+            self.Y = [[] for _ in range(n)]
+        for i, (a, b) in enumerate(zip(x, y)):
+            if a is not None and b is not None:
+                self.X[i].append(a)
+                self.Y[i].append(b)
+        self.axes[0].cla()
+        for x, y, fmts in zip(self.X, self.Y, self.fmts):
+            self.axes[0].plot(x, y, fmts)
+        self.config_axes()
+        display(self.fig)
+        clear_output(wait=True)
+        
+    
+class Accumulator:
+    """For accumulating sums over n variables"""
+    def __init__(self, n):
+        self.data = [0.0] * n
+    
+
+    def add(self, *arg):
+        self.data = [a + float(b) for a, b in zip(self.data, arg)]
+
+
+    def reset(self):
+        self.data = [0.0] * len(self.data)
+
+
+    def __getitem__(self, idx):
+        return self.data[idx]
