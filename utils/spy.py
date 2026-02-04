@@ -227,10 +227,10 @@ class FashionMNIST(DataModule):
         self.std = [1.0]
         
         # Định nghĩa transform
-        trans = transforms.Compose([
-            transforms.Resize(resize),
-            transforms.ToTensor()
-        ])
+        trans = [transforms.ToTensor()]
+        if resize is not None:
+            trans.insert(0, transforms.Resize(resize))
+        trans = transforms.Compose(trans)
         
         # Download + load dataset
         self.train = torchvision.datasets.FashionMNIST(
@@ -265,21 +265,27 @@ class CIFAR10(DataModule):
         self.std = [0.247, 0.243, 0.262]
         
         # Define transform with data augmentation for training
-        train_trans = transforms.Compose([
-            transforms.Resize(resize),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(resize[0], padding=4),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=self.mean, 
-                               std=self.std)
-        ])
+        train_list = []
+        if resize is not None:
+            train_list.append(transforms.Resize(resize))
+            train_list.append(transforms.RandomHorizontalFlip())
+            train_list.append(transforms.RandomCrop(resize[0], padding=4))
         
-        test_trans = transforms.Compose([
-            transforms.Resize(resize),
+        train_list.extend([
             transforms.ToTensor(),
-            transforms.Normalize(mean=self.mean,
-                               std=self.std)
+            transforms.Normalize(mean=self.mean, std=self.std)
         ])
+        train_trans = transforms.Compose(train_list)
+        
+        test_list = []
+        if resize is not None:
+            test_list.append(transforms.Resize(resize))
+            
+        test_list.extend([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=self.mean, std=self.std)
+        ])
+        test_trans = transforms.Compose(test_list)
         
         # Download + load dataset
         self.train = torchvision.datasets.CIFAR10(
@@ -1398,6 +1404,18 @@ def load_data_ptb(batch_size, max_window_size, num_noise_words):
     return data_iter, vocab
 
 
+def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
+    axes.set_xlabel(xlabel)
+    axes.set_ylabel(ylabel)
+    axes.set_xlim(xlim)
+    axes.set_ylim(ylim)
+    axes.set_xscale(xscale)
+    axes.set_yscale(yscale)
+    if legend:
+        axes.legend(legend)
+    axes.grid()
+
+
 from matplotlib_inline import backend_inline
 
 
@@ -1413,17 +1431,6 @@ class Animator:
         if nrows * ncols == 1:
             self.axes = [self.axes, ]
         # Use a function to capture arguments
-        def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
-            axes.set_xlabel(xlabel)
-            axes.set_ylabel(ylabel)
-            axes.set_xlim(xlim)
-            axes.set_ylim(ylim)
-            axes.set_xscale(xscale)
-            axes.set_yscale(yscale)
-            if legend:
-                axes.legend(legend)
-            axes.grid()
-
         self.config_axes = lambda: set_axes(self.axes[0], xlabel, ylabel, xlim, ylim, 
                                             xscale, yscale, legend)
         self.X, self.Y, self.fmts = None, None, fmts
@@ -1468,3 +1475,93 @@ class Accumulator:
 
     def __getitem__(self, idx):
         return self.data[idx]
+    
+
+class TokenEmbedding:
+    """Download token embeddings from pretrained GloVe or fastText model"""
+    def __init__(self, embedding_name):
+        self.idx_to_token, self.idx_to_vec = self._load_embedding(embedding_name)
+        self.unknown_idx = 0
+        self.token_to_idx = {token: idx for idx, token in enumerate(self.idx_to_token)}
+
+
+    def _load_embedding(self, embedding_name):
+        idx_to_token, idx_to_vec = ['<unk>'], []
+        data_dir = download_extract(embedding_name, folder='../../data')
+        # GloVe website: https://nlp.stanford.edu/projects/glove/
+        # fastText website: https://fasttext.cc/
+        with open(os.path.join(data_dir, 'vec.txt'), 'r') as f:
+            for line in f:
+                elems = line.rstrip().split(' ')
+                token, elems = elems[0], [float(elem) for elem in elems[1: ]]
+                # Skip the header information
+                if len(elems) > 1:
+                    idx_to_token.append(token)
+                    idx_to_vec.append(elems)
+        # Vector representation for '<unk>'
+        idx_to_vec = [[0] * len(idx_to_vec[0])] + idx_to_vec
+        return idx_to_token, torch.tensor(idx_to_vec)
+    
+
+    def __getitem__(self, tokens):
+        indices = [self.token_to_idx.get(token, self.unknown_idx) for token in tokens]
+        vecs = self.idx_to_vec[torch.tensor(indices)]
+        return vecs
+    
+
+    def __len__(self):
+        return len(self.idx_to_token)
+    
+
+def accuracy(Y_hat, Y, averaged=True):
+        """Compute accuracy. Y_hat and Y can have different shapes"""
+        Y_hat = Y_hat.reshape((-1, Y_hat.shape[-1]))
+        Y = Y.reshape(-1)
+        pred = torch.argmax(Y_hat, dim=1)
+        compare = (pred == Y).type(torch.float32) 
+        return compare.mean() if averaged else compare.sum()
+
+
+def evaluate_accuracy(net, data_iter, device=None):
+    """Compute the accuracy for a model on a dataset - evaluation mode"""
+    if isinstance(net, nn.Module):
+        net.eval()
+        if not device:
+            device = next(iter(net.parameters())).device
+    metrics = Accumulator(2)   # number of correct predictions, number of predictions
+
+    with torch.no_grad():
+            for X, y in data_iter:
+                if isinstance(X, list):
+                    X = [x.to(device) for x in X]
+                else:
+                    X = X.to(device)
+                y = y.to(device)
+                metrics.add(accuracy(net(X), y, False), y.numel())
+    return metrics[0] / metrics[1]
+
+
+def plot(X, Y=None, xlabel=None, ylabel=None, legend=[], xlim=None, ylim=None,
+         xscale='linear', yscale='linear', fmts=('-', 'm--', 'g-.', 'r:'),
+         figsize=(3.5, 2.5), axes=None):
+    """Plot data points"""
+    def has_one_axis(X):
+        return (hasattr(X, "ndim") and X.ndim == 1 or isinstance(X, list) and not hasattr(X[0], "__len__"))
+    
+    if has_one_axis(X): X = [X]
+    if Y is None:
+        X, Y = [[]] * len(X), X
+    elif has_one_axis(Y):
+        Y = [Y]
+    if len(Y) != len(X):
+        X = X * len(Y)
+
+    backend_inline.set_matplotlib_formats('svg')
+    plt.rcParams['figure.figsize'] = figsize
+
+    if axes is None:
+        axes = plt.gca()        # get current axes
+    axes.cla()
+    for x, y, fmt in zip(X, Y, fmts):
+        axes.plot(x, y, fmt) if len(x) else axes.plot(y, fmt)
+    set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
