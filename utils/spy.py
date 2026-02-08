@@ -1,15 +1,19 @@
 import torch
 import os
+import re
 import math
 import collections
 from torch import nn
 from tqdm import tqdm
 from torch import optim
 import matplotlib.pyplot as plt
+import datasets
+from datasets import load_dataset
 import torchvision
 from torchvision import transforms
 from IPython.display import clear_output, display
 from torch.utils.data import DataLoader, TensorDataset
+SPY = dict()
 
 
 class Module(nn.Module):
@@ -429,14 +433,25 @@ def visualize_prediction(model, data, num_examples=8, trainer=None, save_path=No
     plt.show()
 
 
+def try_all_gpus():
+    """Try all existing GPUs"""
+    def gpu(i=0):
+        return torch.device(f'cuda:{i}')
+    devices = [gpu(i) for i in range(torch.cuda.device_count())]
+    return devices if devices else [torch.device('cpu')]
+
+
 class Vocab:
     """Build vocabulary for language models and other convenient functions"""
     def __init__(self, tokens=[], min_freq=0, reserved_tokens=[]):
         # Flatten 2D list if necessary
         if tokens and isinstance(tokens[0], list):
-            tokens = [word for line in tokens for word in line]
-        # Count words frequency
-        counter = collections.Counter(tokens)
+            counter = collections.Counter()
+            for line in tokens:
+                counter.update(line)
+        else:
+            counter = collections.Counter(tokens)
+        
         self.token_freqs = sorted(counter.items(), key=lambda x : x[1], reverse=True)
 
         # convert token to index and index to token
@@ -1235,43 +1250,58 @@ def download(url, folder='../data', sha1_hash=None):
     """Download a file to folder and return its local path"""
     os.makedirs(folder, exist_ok=True)
     fname = os.path.join(folder, url.split('/')[-1])
-    # Check if cache hit
-    if os.path.exists(fname) and sha1_hash:
+
+    def get_file_sha1(path):
         sha1 = hashlib.sha1()
-        with open(fname, 'rb') as f:     # rb = read binary
+        with open(path, 'rb') as f:
             while True:
                 data = f.read(1048576)
-                if not data:
-                    break
+                if not data: break
                 sha1.update(data)
-        # Return the final result as a hexadecimal string and compare it with real sha1_hash
-        if sha1.hexdigest() == sha1_hash:
+        return sha1.hexdigest()
+    # Check if file exists
+    if os.path.exists(fname):
+        actual_hash = get_file_sha1(fname)
+        # Check if cache hits
+        if sha1_hash and actual_hash == sha1_hash:
             return fname
-    # Download if cache miss
+        if sha1_hash is None:
+            SPY[url] = actual_hash
+            return fname
+    # Download if cache miss or file doesn't exist
     print(f"Downloading {fname} from {url}...")
     r = requests.get(url, stream=True)
     r.raise_for_status()
     with open(fname, 'wb') as f:        # wb = write binary
         f.write(r.content)
+    # Update sha1_hash into dictionary
+    downloaded_hash = get_file_sha1(fname)
+    SPY[url] = downloaded_hash
+     
     return fname
 
 
 import zipfile
 import tarfile
 
-def download_extract(name, folder='../data', in_folder=None):
+def download_extract(name, folder='../data', in_folder=None, sha1_hash=None):
     """Download and extract a zip/tar file"""
-    fname = download(name, folder)
+    fname = download(name, folder, sha1_hash)
     base_dir = os.path.dirname(fname)
     # Extract filename into 2 parts: filename without extension and extension
     data_dir, ext = os.path.splitext(fname)
     if ext == '.zip':
         fp = zipfile.ZipFile(fname, 'r')
+        # Filter out problematic mac-specific files
+        members = [m for m in fp.infolist() if not m.filename.startswith('__MACOSX/') 
+                   and 'Icon\r' not in m.filename]
+        fp.extractall(base_dir, members=members)
     elif ext in ('.tar', '.gz'):
         fp = tarfile.open(fname, 'r')
+        fp.extractall(base_dir)
     else:
         assert False, 'Only zip/tar files can be extracted!'
-    fp.extractall(base_dir)
+    
     return os.path.join(base_dir, in_folder) if in_folder else data_dir
     
 
@@ -1532,13 +1562,13 @@ def evaluate_accuracy(net, data_iter, device=None):
     metrics = Accumulator(2)   # number of correct predictions, number of predictions
 
     with torch.no_grad():
-            for X, y in data_iter:
-                if isinstance(X, list):
-                    X = [x.to(device) for x in X]
-                else:
-                    X = X.to(device)
-                y = y.to(device)
-                metrics.add(accuracy(net(X), y, False), y.numel())
+        for X, y in data_iter:
+            if isinstance(X, list):
+                X = [x.to(device) for x in X]
+            else:
+                X = X.to(device)
+            y = y.to(device)
+            metrics.add(accuracy(net(X), y, False), y.numel())
     return metrics[0] / metrics[1]
 
 
@@ -1642,12 +1672,36 @@ class NextSequencePred(nn.Module):
         return self.output(X)
     
 
+class BERTModel(nn.Module):
+    def __init__(self, vocab_size, num_hiddens, ffn_num_hiddens,
+                 num_heads, num_blks, dropout, max_len=1000):
+        super().__init__()
+        self.encoder = BERTEncoder(vocab_size, num_hiddens, ffn_num_hiddens,
+                                   num_heads, num_blks, dropout, max_len)
+        self.hidden = nn.Sequential(
+            nn.LazyLinear(num_hiddens), 
+            nn.Tanh()
+            )
+        self.mlm = MaskLM(vocab_size, num_hiddens)
+        self.nsp = NextSequencePred()
+
+
+    def forward(self, tokens, segments, valid_lens=None, pred_positions=None):
+        encoded_X = self.encoder(tokens, segments, valid_lens)
+        if pred_positions is not None:
+            mlm_Y_hat = self.mlm(encoded_X, pred_positions)
+        else:
+            mlm_Y_hat = None
+        nsp_Y_hat = self.nsp(self.hidden(encoded_X[:, 0, :]))
+        return encoded_X, mlm_Y_hat, nsp_Y_hat
+
+
 def _read_wiki(data_dir):
-    file_name = os.path.join(data_dir, 'wiki.train.tokens')
-    with open(file_name, 'r') as f:
+    file_name = os.path.join(data_dir, 'wikitext-2-v1-train.txt')
+    with open(file_name, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     # Uppercase letters are converted to lowercase
-    paragraphs = [lines.strip().lower().split(' . ') 
+    paragraphs = [line.strip().lower().split(' . ') 
                   for line in lines if len(line.split(' . ')) >= 2]
     random.shuffle(paragraphs)
     # paragraphs is a list of list of lists
@@ -1672,7 +1726,7 @@ def _get_nsp_data_from_paragraph(paragraph, paragraphs, max_len):
         # 2 <sep> tokens and 1 <cls> token
         if len(tokens_a) + len(tokens_b) + 3 > max_len:
             continue
-        tokens, segments = spy.get_tokens_and_segments(tokens_a, tokens_b)
+        tokens, segments = get_tokens_and_segments(tokens_a, tokens_b)
         nsp_data_from_paragraph.append((tokens, segments, is_next))
     return nsp_data_from_paragraph
 
@@ -1768,15 +1822,15 @@ def tokenize(lines, token='word'):
 
 class _WikiTextDataset(torch.utils.data.Dataset):
     def __init__(self, paragraphs, max_len):
-        paragraphs = [spy.tokenize(paragraph) for paragraph in paragraphs]
+        paragraphs = [tokenize(paragraph) for paragraph in paragraphs]
         sentences = [sentence for paragraph in paragraphs for sentence in paragraph]
-        self.vocab = spy.Vocab(sentences, min_freq=5, reserved_tokens=[
+        self.vocab = Vocab(sentences, min_freq=5, reserved_tokens=[
             '<pad>', '<sep>', '<mask>', '<cls>'])
         # Get data for the next sentence prediction task
         examples = []
         for paragraph in paragraphs:
             examples.extend(_get_nsp_data_from_paragraph(
-                paragraph, paragraphs, self.vocab, max_len
+                paragraph, paragraphs, max_len
             ))
         # Get data for the masked language modeling task
         examples = [(_get_mlm_data_from_tokens(tokens, self.vocab) + (segments, is_next))
@@ -1797,3 +1851,239 @@ class _WikiTextDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.all_token_ids)
      
+
+def load_data_wiki(batch_size, max_len):
+    """Load the WikiText-2 dataset"""
+    data_dir = "../../data/wikitext-2"
+    os.makedirs(data_dir, exist_ok=True)
+    train_ds = load_dataset("Salesforce/wikitext", "wikitext-2-v1", split="train")
+
+    with open(os.path.join(data_dir, "wikitext-2-v1-train.txt"), "w", encoding="utf-8") as f:
+        for line in train_ds["text"]:
+            f.write(line + "\n")
+    
+    paragraphs = _read_wiki(data_dir)
+    train_set = _WikiTextDataset(paragraphs, max_len)
+    train_iter = torch.utils.data.DataLoader(train_set, batch_size,
+                                        shuffle=True)
+    return train_iter, train_set.vocab
+
+
+def _get_batch_loss_BERT(net, loss, vocab_size, tokens_X, segments_X, 
+                         valid_lens_x, pred_positions_X, mlm_weights_X,
+                         mlm_Y, nsp_y):
+    _, mlm_Y_hat, nsp_Y_hat = net(tokens_X, segments_X, 
+                                  valid_lens_x, pred_positions_X)
+    # Compute masked language model loss
+    mlm_l = loss(mlm_Y_hat.reshape(-1, vocab_size), mlm_Y.reshape(-1)) \
+                * mlm_weights_X.reshape(-1)
+    mlm_l = mlm_l.sum() / (mlm_weights_X.sum() + 1e-9)
+    # Compute the next sequence prediction loss
+    nsp_l = loss(nsp_Y_hat.reshape(-1, 2), nsp_y)
+    l = mlm_l + nsp_l
+    return mlm_l, nsp_l, l
+
+
+def train_BERT(train_iter, net, loss, vocab_size, devices, num_steps):
+    net(*next(iter(train_iter))[:4])
+    net = nn.DataParallel(net, device_ids=devices)
+    trainer = torch.optim.Adam(net.parameters(), lr=0.01)
+    step = 0
+    animator = Animator(xlabel='step', ylabel='loss', xlim=[1, num_steps],
+                            legend=['mlm', 'nsp'])
+    # mlm loss, nsp loss, count
+    metrics = Accumulator(3)
+    num_steps_reached = False
+
+    while step < num_steps and not num_steps_reached:
+        for tokens_X, segments_X, valid_lens_x, pred_positions_X, \
+            mlm_weights_X, mlm_Y, nsp_y in train_iter:
+            tokens_X = tokens_X.to(devices[0])
+            segments_X = segments_X.to(devices[0])
+            valid_lens_x = valid_lens_x.to(devices[0])
+            pred_positions_X = pred_positions_X.to(devices[0])
+            mlm_weights_X = mlm_weights_X.to(devices[0])
+            mlm_Y, nsp_y = mlm_Y.to(devices[0]), nsp_y.to(devices[0])
+
+            trainer.zero_grad()
+            mlm_l, nsp_l, l = _get_batch_loss_BERT(
+                net, loss, vocab_size, tokens_X, segments_X,
+                valid_lens_x, pred_positions_X, mlm_weights_X, 
+                mlm_Y, nsp_y
+            )
+            l.backward()
+            trainer.step()
+            metrics.add(mlm_l, nsp_l, tokens_X.shape[0], 1)
+            animator.add(step + 1, (metrics[0] / metrics[2], metrics[1] / metrics[2]))
+            step += 1
+            if step == num_steps:
+                num_steps_reached = True
+                break
+
+    print(f"MLM loss: {metrics[0] / metrics[2]:.3f}", 
+          f"NSP loss: {metrics[1] / metrics[2]:.3f}")
+    
+
+def truncate_pad(line, num_steps, padding_token):
+    """Truncate and padding tokens in a line"""
+    # Truncate
+    if len(line) > num_steps:
+        return line[:num_steps]
+    # Padding
+    else:
+        return line + [padding_token] * (num_steps - len(line))
+    
+
+def read_imdb(data_dir, is_train):
+    """Read the IMDb review dataset"""
+    data, labels = [], []
+    for label in ('pos', 'neg'):
+        folder_name = os.path.join(data_dir, 'train' if is_train else 'test', label)
+        for file in tqdm(os.listdir(folder_name), desc=f'Reading {label} reviews'):
+            with open(os.path.join(folder_name, file), 'rb') as f:
+                review = f.read().decode('utf-8').replace('\n', '')
+                data.append(review)
+                labels.append(1 if label == 'pos' else 0)
+    return data, labels
+
+
+def load_data_imdb(batch_size, num_steps=500):
+    """Return data iterator and the vocabulary of the IMDb film review dataset"""
+    data_dir = download_extract('http://d2l-data.s3-accelerate.amazonaws.com/aclImdb_v1.tar.gz',
+                                '../../data/aclImdb', 'aclImdb', 
+                                '01ada507287d82875905620988597833ad4e0903')
+    train_data = read_imdb(data_dir, True)
+    test_data = read_imdb(data_dir, False)
+    train_tokens = tokenize(train_data[0])
+    test_tokens = tokenize(test_data[0])
+    vocab = Vocab(train_tokens, min_freq=5)
+    train_features = torch.tensor([truncate_pad(
+        vocab[line], num_steps, vocab['<pad>']) for line in train_tokens])
+    test_features = torch.tensor([truncate_pad(
+        vocab[line], num_steps, vocab['<pad>']) for line in test_tokens])
+    train_iter = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(train_features, torch.tensor(train_data[1])),
+        batch_size=batch_size,
+        shuffle=True
+    )
+    test_iter = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(test_features, torch.tensor(test_data[1])),
+        batch_size=batch_size,
+        shuffle=False
+    )
+    return train_iter, test_iter, vocab
+
+
+def train_batch(net, X, y, loss, trainer, devices):
+    """Train a minibatch on multiple GPUs"""
+    if isinstance(X, list):
+        X = [x.to(devices[0]) for x in X]
+    else: 
+        X = X.to(devices[0])
+    y = y.to(devices[0])
+    net.train()
+    trainer.zero_grad()
+    pred = net(X)
+    l = loss(pred, y)
+    l.sum().backward()
+    trainer.step()
+    train_loss = l.sum()
+    train_acc = accuracy(pred, y, False)
+    return train_loss, train_acc
+
+
+def train(net, train_iter, test_iter, loss, trainer, num_epochs, devices=try_all_gpus()):
+    """Train a model on multiple GPUs"""
+    net = nn.DataParallel(net, device_ids=devices).to(devices[0])
+    num_batches = len(train_iter)
+    animator = Animator(xlabel='epoch', xlim=[1, num_epochs], 
+                        legend=['train loss', 'train acc', 'test acc'])
+
+    for epoch in range(num_epochs):
+        # train loss, train_acc, number of examples, number of predictions
+        metrics = Accumulator(4)
+        for i, (features, labels) in enumerate(train_iter):
+            train_loss, train_acc = train_batch(
+                net, features, labels, loss, trainer, devices)
+            metrics.add(train_loss, train_acc, labels.shape[0], labels.numel())
+            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
+                animator.add(epoch + (i + 1) / num_batches, 
+                             [metrics[0] / metrics[2], metrics[1] / metrics[3], None])
+        test_acc = evaluate_accuracy(net, test_iter)
+        animator.add(epoch + 1, [None, None, test_acc])
+            
+    print(f'Train loss: {metrics[0] / metrics[2]:.3f}\n'
+          f'Train acc: {metrics[1] / metrics[3]:.3f}\n'
+          f'Test acc: {test_acc:.3f}')
+    
+
+def predict_sentiment(net, vocab, sentence):
+    """Predict the sentiment of a text sequence"""
+    sequence = torch.tensor(
+        vocab[sentence.split()], device='cuda' if torch.cuda.is_available() else 'cpu')
+    preds = torch.argmax(net(sequence.reshape(1, -1)), dim=1)
+    return 'positive' if preds == 1 else 'negative'
+
+
+def read_snli(data_dir, is_train):
+    """Read the SNLI dataset into premises, hypotheses, and labels"""
+    def extract_text(s):
+        s = re.sub('\\(', '', s)
+        s = re.sub('\\)', '', s)
+        s = re.sub('\\s{2,}', ' ', s)
+        return s.strip()
+    label_set = {'entailment': 0, 'contradiction': 1, 'neutral': 2}
+    file_name = os.path.join(
+        data_dir, 'snli_1.0_train.txt' if is_train else 'snli_1.0_test.txt')
+    with open(file_name, 'r') as f:
+        rows = [row.split('\t') for row in f.readlines()[1:]]
+    premises = [extract_text(row[1]) for row in rows if row[0] in label_set]
+    hypotheses = [extract_text(row[2]) for row in rows if row[0] in label_set]
+    labels = [label_set[row[0]] for row in rows if row[0] in label_set]
+    return premises, hypotheses, labels
+
+
+class SNLIDataset(torch.utils.data.Dataset):
+    """A customized dataset class for SNLI dataset"""
+    def __init__(self, dataset, num_steps, vocab=None):
+        self.num_steps = num_steps
+        premise_tokens = tokenize(dataset[0])
+        hypothesis_tokens = tokenize(dataset[1])
+        if vocab is None:
+            self.vocab = Vocab(
+                premise_tokens + hypothesis_tokens, min_freq=5, reserved_tokens='<pad>')
+        else: 
+            self.vocab = vocab
+        self.premises = self._pad(premise_tokens)
+        self.hypotheses = self._pad(hypothesis_tokens)
+        self.labels = torch.tensor(dataset[2])
+
+
+    def _pad(self, lines):
+        return torch.tensor([truncate_pad(
+                self.vocab[line], 
+                num_steps=self.num_steps, 
+                padding_token=self.vocab['<pad>']) for line in lines])
+    
+
+    def __getitem__(self, index):
+        return (self.premises[index], self.hypotheses[index]), self.labels[index]
+    
+
+    def __len__(self):
+        return len(self.labels)
+    
+
+def load_data_snli(batch_size, num_steps=50):
+    """Download the SNLI dataset and return data iterators and vocabulary"""
+    data_dir = spy.download_extract(
+        'https://nlp.stanford.edu/projects/snli/snli_1.0.zip', 
+        '../../data', sha1_hash='9fcde07509c7e87ec61c640c1b2753d9041758e4')
+    train_data = read_snli(data_dir, True)
+    test_data = read_snli(data_dir, False)
+    train_set = SNLIDataset(train_data, num_steps)
+    test_set = SNLIDataset(test_data, num_steps)
+    train_iter = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    test_iter = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
+    
+    return train_iter, test_iter, train_set.vocab
