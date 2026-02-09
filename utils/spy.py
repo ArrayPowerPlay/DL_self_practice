@@ -1497,7 +1497,8 @@ class Accumulator:
     
 
     def add(self, *arg):
-        self.data = [a + float(b) for a, b in zip(self.data, arg)]
+        self.data = [a + float(b.item()) if isinstance(b, torch.tensor)
+                     else a + float(b) for a, b in zip(self.data, arg)]
 
 
     def reset(self):
@@ -2037,9 +2038,14 @@ def read_snli(data_dir, is_train):
         data_dir, 'snli_1.0_train.txt' if is_train else 'snli_1.0_test.txt')
     with open(file_name, 'r') as f:
         rows = [row.split('\t') for row in f.readlines()[1:]]
-    premises = [extract_text(row[1]) for row in rows if row[0] in label_set]
-    hypotheses = [extract_text(row[2]) for row in rows if row[0] in label_set]
-    labels = [label_set[row[0]] for row in rows if row[0] in label_set]
+
+    premises, hypotheses, labels = [], [], []
+    for row in tqdm(rows, desc="Processing SNLI dataset"):
+        if row[0] in label_set:
+            premises.append(extract_text(row[1]))
+            hypotheses.append(extract_text(row[2]))
+            labels.append(label_set[row[0]])
+
     return premises, hypotheses, labels
 
 
@@ -2051,7 +2057,7 @@ class SNLIDataset(torch.utils.data.Dataset):
         hypothesis_tokens = tokenize(dataset[1])
         if vocab is None:
             self.vocab = Vocab(
-                premise_tokens + hypothesis_tokens, min_freq=5, reserved_tokens='<pad>')
+                premise_tokens + hypothesis_tokens, min_freq=5, reserved_tokens=['<pad>'])
         else: 
             self.vocab = vocab
         self.premises = self._pad(premise_tokens)
@@ -2076,14 +2082,26 @@ class SNLIDataset(torch.utils.data.Dataset):
 
 def load_data_snli(batch_size, num_steps=50):
     """Download the SNLI dataset and return data iterators and vocabulary"""
-    data_dir = spy.download_extract(
+    data_dir = download_extract(
         'https://nlp.stanford.edu/projects/snli/snli_1.0.zip', 
         '../../data', sha1_hash='9fcde07509c7e87ec61c640c1b2753d9041758e4')
     train_data = read_snli(data_dir, True)
     test_data = read_snli(data_dir, False)
     train_set = SNLIDataset(train_data, num_steps)
-    test_set = SNLIDataset(test_data, num_steps)
+    test_set = SNLIDataset(test_data, num_steps, vocab=train_set.vocab)
     train_iter = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
     test_iter = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
     
     return train_iter, test_iter, train_set.vocab
+
+
+def predict_snli(net, vocab, premise, hypothesis):
+    """Predict the logical relationship between the premise and the hypothesis"""
+    net.eval()
+    premise = torch.tensor(vocab[premise], 
+                           device = 'cuda' if torch.cuda.is_available() else 'cpu')
+    hypothesis = torch.tensor(vocab[hypothesis],
+                              device = 'cuda' if torch.cuda.is_available() else 'cpu')
+    label = torch.argmax(net([
+        premise.reshape(1, -1), hypothesis.reshape(1, -1)]), dim=-1)
+    return 'entailment' if label == 0 else 'contradiction' if label == 1 else 'neutral'
